@@ -200,9 +200,11 @@ public class DockerExecutor implements IntExecutor {
 //      }
       LOG.info("launchContainer: " + commandStr + " " + Joiner.on(" ").join(command));
       shExec = new ShellCommandExecutor(
-          command,
-          new File(containerWorkDir.toUri().getPath()),
-          container.getLaunchContext().getEnvironment());      // sanitized env
+    	        command,
+    	        new File(containerWorkDir.toUri().getPath()),
+    	        container.getLaunchContext().getEnvironment(),      // sanitized env
+    	        0L,
+    	        false);
       if (containerExecutorImpt.isContainerActive(containerId)) {
         shExec.execute();
       } else {

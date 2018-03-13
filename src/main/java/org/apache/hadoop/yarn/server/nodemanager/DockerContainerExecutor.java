@@ -50,6 +50,7 @@ import org.apache.hadoop.yarn.util.ConverterUtils;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
@@ -76,9 +77,11 @@ public class DockerContainerExecutor extends ContainerExecutor {
   public static final String DOCKER_CONTAINER_EXECUTOR_SCRIPT = "docker_container_executor";
   public static final String DOCKER_CONTAINER_EXECUTOR_SESSION_SCRIPT = "docker_container_executor_session";
 
-  /** docker 相关的挂载代码 */
-  public static final String DOCKER_CONTAINER_MOUNT = "docker_container_mount";
-
+  /** docker的自定义命令 */
+  public static final String DOCKER_CMD = "docker_cmd";
+  
+  public static final String USE_DOCKER_EXECUTOR = "docker_executor";
+  
   // This validates that the image is a proper docker image and would not crash docker.
   public static final String DOCKER_IMAGE_PATTERN = "^(([\\w\\.-]+)(:\\d+)*\\/)?[\\w\\.:-]+$";
 
@@ -196,13 +199,11 @@ public class DockerContainerExecutor extends ContainerExecutor {
         new Path(containerWorkDir, ContainerLaunch.FINAL_CONTAINER_TOKENS_FILE);
     lfs.util().copy(nmPrivateTokensPath, tokenDst);
 
-    String cpuMemLimit = getCpuMem(container);
-
     String localDirMount = toMount(localDirs);
     String logDirMount = toMount(logDirs);
     
-   String mountCustomer = getMountPath2IsRw(container);
-    
+    String dockerCmd = getDockerCmd(container);
+   
     String containerWorkDirMount = toMount(Collections.singletonList(containerWorkDir.toUri().getPath()));
     StringBuilder commands = new StringBuilder();
     String commandStr = commands.append(dockerExecutor)
@@ -212,11 +213,10 @@ public class DockerContainerExecutor extends ContainerExecutor {
         .append("--rm --net=host")
         .append(" ")
         .append(" --name " + containerIdStr)
-        .append(cpuMemLimit)
         .append(localDirMount)
         .append(logDirMount)
         .append(containerWorkDirMount)
-        .append(mountCustomer)
+        .append(dockerCmd)
         .append(" ")
         .append(containerImageName)
         .toString();
@@ -247,9 +247,11 @@ public class DockerContainerExecutor extends ContainerExecutor {
         LOG.debug("launchContainer: " + commandStr + " " + Joiner.on(" ").join(command));
       }
       shExec = new ShellCommandExecutor(
-          command,
-          new File(containerWorkDir.toUri().getPath()),
-          container.getLaunchContext().getEnvironment());      // sanitized env
+        command,
+        new File(containerWorkDir.toUri().getPath()),
+        container.getLaunchContext().getEnvironment(),      // sanitized env
+        0L,
+        false);
       if (isContainerActive(containerId)) {
         shExec.execute();
       } else {
@@ -287,34 +289,27 @@ public class DockerContainerExecutor extends ContainerExecutor {
     }
     return 0;
   }
-  
-  private String getMountPath2IsRw(Container container) {
-	  StringBuilder builder = new StringBuilder();
-	  String mountInfo = container.getLaunchContext().getEnvironment().get(DOCKER_CONTAINER_MOUNT);
-	  if (mountInfo == null) mountInfo = "";
-	  
-	  String[] ss = mountInfo.trim().split(";");
-	  for (String pathFrom_to_rw : ss) {
-		  if (pathFrom_to_rw.equals("")) continue;
-		  builder.append(" -v " + pathFrom_to_rw.trim() );
-	  }
-	  return builder.toString();
+  private String getDockerCmd(Container container) {
+	  String cmdInfo = container.getLaunchContext().getEnvironment().get(DOCKER_CMD);
+	  if (cmdInfo == null) {
+		  cmdInfo = "";
+	  } else {
+		  cmdInfo = cmdInfo.trim();
+		  if (!cmdInfo.equals("")) {
+			  cmdInfo = " " + cmdInfo;
+		  }
+	  } 
+	  return cmdInfo;
   }
-  
-  private String getCpuMem(Container container) {
-	  Resource resource = container.getResource();
-	  int cpu = resource.getVirtualCores() *10;
-	  if (cpu == 0) cpu = 5;
-	  int mem = resource.getMemory();
-	 return " -c " + cpu + " -m " + mem + "m ";
-  }
+
   @Override
   public void writeLaunchEnv(OutputStream out, Map<String, String> environment, Map<Path, List<String>> resources, List<String> command) throws IOException {
     ContainerLaunch.ShellScriptBuilder sb = ContainerLaunch.ShellScriptBuilder.create();
 
     Set<String> exclusionSet = new HashSet<String>();
     exclusionSet.add(YarnConfiguration.NM_DOCKER_CONTAINER_EXECUTOR_IMAGE_NAME);
-    exclusionSet.add(DOCKER_CONTAINER_MOUNT);
+    exclusionSet.add(DOCKER_CMD);
+    exclusionSet.add(USE_DOCKER_EXECUTOR);
     exclusionSet.add(ApplicationConstants.Environment.HADOOP_YARN_HOME.name());
     exclusionSet.add(ApplicationConstants.Environment.HADOOP_COMMON_HOME.name());
     exclusionSet.add(ApplicationConstants.Environment.HADOOP_HDFS_HOME.name());
@@ -480,8 +475,12 @@ public class DockerContainerExecutor extends ContainerExecutor {
     for (Path baseDir : baseDirs) {
       Path del = subDir == null ? baseDir : new Path(baseDir, subDir);
       LOG.info("Deleting path : " + del);
-      if (!lfs.delete(del, true)) {
-        LOG.warn("delete returned false for path: [" + del + "]");
+      try {
+        if (!lfs.delete(del, true)) {
+          LOG.warn("delete returned false for path: [" + del + "]");
+        }
+      } catch (FileNotFoundException e) {
+        continue;
       }
     }
   }
